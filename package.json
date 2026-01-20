@@ -1,0 +1,24 @@
+{
+  "name": "torrent-messaging",
+  "version": "0.0.0",
+  "description": "DHT-based torrent messaging system with ed25519 using BEP44 standards",
+  "license": "UNLICENSED",
+  "author": "Thomas Dik",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/andrewwhite/torrent-messaging"
+  },
+  "bugs": {
+    "url": "https://github.com/andrewwhite/torrent-messaging/issues"
+  },
+  "type": "module",
+  "scripts": {
+    "generate-keys": "node generate-keys.js",
+    "share": "node share-message.js",
+    "find": "node find-messages.js"
+  },
+  "dependencies": {
+    "bittorrent-dht": "^11.0.7",
+    "webtorrent": "^2.5.1"
+  }
+}
