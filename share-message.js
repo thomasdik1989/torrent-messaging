@@ -197,13 +197,25 @@ async function main() {
     console.log('Share your public key with others so they can find your messages:');
     console.log('  node find-messages.js', keys.publicKey);
     console.log('');
-    console.log('Keep this process running to seed the torrent...');
-    console.log('Press Ctrl+C to stop seeding');
+    console.log('Keep this process running to seed the torrent and maintain DHT presence...');
+    console.log('Press Ctrl+C to stop');
+
+    // Periodically re-announce to DHT to maintain presence
+    const reannounceInterval = setInterval(async () => {
+      try {
+        console.log(`[${new Date().toISOString()}] Re-announcing to DHT...`);
+        await putMutable(dht, publicKey, privateKey, manifestTorrent.infohash, seq);
+        console.log(`[${new Date().toISOString()}] DHT re-announcement successful`);
+      } catch (err) {
+        console.log(`[${new Date().toISOString()}] DHT re-announcement failed: ${err.message}`);
+      }
+    }, 60000); // Re-announce every 60 seconds
 
     // Keep running to seed
     process.on('SIGINT', async () => {
       console.log('');
       console.log('Shutting down...');
+      clearInterval(reannounceInterval);
       if (client) await destroyClient(client);
       if (dht) await destroyDHT(dht);
       process.exit(0);

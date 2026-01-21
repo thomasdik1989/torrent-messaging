@@ -132,9 +132,11 @@ async function displayMessagesFromManifest(manifest) {
 }
 
 async function fetchAndDisplayMessages() {
-  // Get manifest from DHT
-  console.log('Querying DHT for manifest...');
-  const result = await getMutable(dht, publicKey, 20000);
+  // Get manifest from DHT (with longer timeout for better propagation)
+  console.log('Querying DHT for manifest (this may take up to 2 minutes)...');
+  console.log('Make sure the publisher is running share-message.js to seed and announce!');
+  console.log('');
+  const result = await getMutable(dht, publicKey, 120000, 10);
 
   let manifestInfohash;
   let currentSeq;
@@ -144,28 +146,19 @@ async function fetchAndDisplayMessages() {
     currentSeq = result.seq;
     console.log('Found manifest in DHT');
   } else {
-    // Try local index as fallback
-    console.log('DHT query returned no results, checking local index...');
-    const localIndex = loadLocalIndex();
-    const localEntry = localIndex[publicKeyHex];
-
-    if (localEntry) {
-      manifestInfohash = localEntry.manifestInfohash;
-      currentSeq = localEntry.seq;
-      console.log('Found manifest in local index');
-    } else {
-      // Try to find manifest file directly
-      console.log('Checking local manifest files...');
-      const localManifest = tryLoadLocalManifest(publicKeyHex);
-      if (localManifest) {
-        console.log('Found local manifest file');
-        // Skip DHT/torrent download, use local manifest directly
-        return await displayMessagesFromManifest(localManifest);
-      }
-
-      console.log('No messages found for this public key.');
-      return false;
-    }
+    // DHT lookup failed
+    console.log('');
+    console.log('Could not find messages via DHT.');
+    console.log('');
+    console.log('Possible reasons:');
+    console.log('  1. The publisher is not running (share-message.js must keep running to seed)');
+    console.log('  2. DHT data has not propagated yet (try again in a few minutes)');
+    console.log('  3. Network connectivity issues');
+    console.log('');
+    console.log('The publisher needs to run share-message.js continuously to:');
+    console.log('  - Seed the torrent files');
+    console.log('  - Re-announce to DHT every 60 seconds');
+    return false;
   }
 
   // In watch mode, check if seq changed
