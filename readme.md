@@ -132,8 +132,7 @@ Output: `Public Key: 3094be6ffec0539f21b92671cc6e6d2a6920d1b7823e34b070b9a42e61a
 ### 3. Share messages
 
 ```bash
-node share-message.js "Hello world!"
-node share-message.js "Another message"
+SERVER_URL=http://localhost:3001 node share-message.js "Your message"
 ```
 
 Keep this process running to seed the torrents.
@@ -141,13 +140,13 @@ Keep this process running to seed the torrents.
 ### 4. Find messages by public key
 
 ```bash
-node find-messages.js <public-key>
+SERVER_URL=http://localhost:3001 node find-messages.js <public-key>
 ```
 
 ### 5. Watch for new messages
 
 ```bash
-node find-messages.js <public-key> --watch --interval=60
+SERVER_URL=http://localhost:3001 node find-messages.js <public-key> --watch --interval=60
 ```
 
 ## Environment Variables
