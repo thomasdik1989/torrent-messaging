@@ -2,14 +2,13 @@
 
 import fs from 'fs';
 import path from 'path';
+import http from 'http';
 import { fileURLToPath } from 'url';
-import { createSignedMessage, signManifest } from './lib/crypto-utils.js';
-import { createDHT, getMutable, putMutable, destroyDHT } from './lib/dht-store.js';
+import { createSignedMessage, signManifest, sign } from './lib/crypto-utils.js';
 import {
   createClient,
   destroyClient,
   seedJSON,
-  downloadJSON,
   generateMessageFilename,
   generateManifestFilename
 } from './lib/torrent-utils.js';
@@ -17,8 +16,10 @@ import {
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const KEYS_FILE = path.join(__dirname, 'data', 'keys.json');
 const LOCAL_INDEX_FILE = path.join(__dirname, 'data', 'local-index.json');
-
 const MESSAGES_DIR = path.join(__dirname, 'data', 'messages');
+
+// Signaling server URL (can be overridden via environment variable)
+const SERVER_URL = process.env.SERVER_URL || 'http://localhost:3000';
 
 // Load or create local index
 function loadLocalIndex() {
@@ -57,6 +58,79 @@ function tryLoadLocalManifest(publicKeyHex) {
   }
 }
 
+// Announce to signaling server
+async function announceToServer(publicKeyHex, privateKey, manifestInfohash, seq) {
+  return new Promise((resolve, reject) => {
+    const dataToSign = JSON.stringify({ publicKey: publicKeyHex, manifestInfohash, seq });
+    const signature = sign(dataToSign, privateKey).toString('hex');
+
+    const payload = JSON.stringify({
+      publicKey: publicKeyHex,
+      manifestInfohash,
+      seq,
+      signature
+    });
+
+    const url = new URL(SERVER_URL);
+    const options = {
+      hostname: url.hostname,
+      port: url.port || 80,
+      path: '/announce',
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Content-Length': Buffer.byteLength(payload)
+      }
+    };
+
+    const req = http.request(options, (res) => {
+      let data = '';
+      res.on('data', chunk => data += chunk);
+      res.on('end', () => {
+        if (res.statusCode === 200) {
+          resolve(JSON.parse(data));
+        } else {
+          reject(new Error(`Server error: ${data}`));
+        }
+      });
+    });
+
+    req.on('error', reject);
+    req.write(payload);
+    req.end();
+  });
+}
+
+// Lookup from signaling server
+async function lookupFromServer(publicKeyHex) {
+  return new Promise((resolve, reject) => {
+    const url = new URL(SERVER_URL);
+    const options = {
+      hostname: url.hostname,
+      port: url.port || 80,
+      path: `/lookup/${publicKeyHex}`,
+      method: 'GET'
+    };
+
+    const req = http.request(options, (res) => {
+      let data = '';
+      res.on('data', chunk => data += chunk);
+      res.on('end', () => {
+        if (res.statusCode === 200) {
+          resolve(JSON.parse(data));
+        } else if (res.statusCode === 404) {
+          resolve(null);
+        } else {
+          reject(new Error(`Server error: ${data}`));
+        }
+      });
+    });
+
+    req.on('error', reject);
+    req.end();
+  });
+}
+
 // Get message from command line args
 const messageContent = process.argv[2] || 'test';
 
@@ -73,69 +147,56 @@ async function main() {
 
   console.log('Using public key:', keys.publicKey);
   console.log('Message:', messageContent);
+  console.log('Server:', SERVER_URL);
   console.log('');
 
-  let dht = null;
   let client = null;
 
   try {
-    // Initialize DHT and WebTorrent client
-    console.log('Connecting to DHT network...');
-    dht = await createDHT();
-    console.log('DHT ready');
-
+    // Initialize WebTorrent client
     console.log('Starting WebTorrent client...');
     client = createClient();
     console.log('WebTorrent ready');
     console.log('');
 
-    // Get current manifest from DHT or local files
+    // Check for existing manifest (local first, then server)
     console.log('Checking for existing manifest...');
-    const existing = await getMutable(dht, publicKey, 15000);
-
     let manifest;
     let seq = 1;
 
-    if (existing && existing.value) {
-      console.log('Found existing manifest in DHT (seq:', existing.seq, ')');
-      const existingInfohash = existing.value.toString('utf8');
-      seq = existing.seq + 1;
+    // Try local index first
+    const localIndex = loadLocalIndex();
+    const localEntry = localIndex[keys.publicKey];
 
-      try {
-        console.log('Downloading existing manifest...');
-        manifest = await downloadJSON(client, existingInfohash, 30000);
-        console.log('Downloaded manifest with', manifest.messages.length, 'existing messages');
-      } catch (err) {
-        console.log('Could not download existing manifest, checking local files...');
-        manifest = tryLoadLocalManifest(keys.publicKey);
-        if (manifest) {
-          console.log('Loaded local manifest with', manifest.messages.length, 'existing messages');
-        } else {
-          manifest = { publicKey: keys.publicKey, messages: [] };
-        }
+    if (localEntry) {
+      seq = localEntry.seq + 1;
+      manifest = tryLoadLocalManifest(keys.publicKey);
+      if (manifest) {
+        console.log('Loaded local manifest with', manifest.messages.length, 'existing messages (seq:', localEntry.seq, ')');
       }
-    } else {
-      // Try local index and local files as fallback
-      console.log('DHT query returned no results, checking local...');
-      const localIndex = loadLocalIndex();
-      const localEntry = localIndex[keys.publicKey];
+    }
 
-      if (localEntry) {
-        seq = localEntry.seq + 1;
-        manifest = tryLoadLocalManifest(keys.publicKey);
-        if (manifest) {
-          console.log('Loaded local manifest with', manifest.messages.length, 'existing messages (seq:', localEntry.seq, ')');
-        } else {
-          manifest = { publicKey: keys.publicKey, messages: [] };
+    // If no local manifest, try server
+    if (!manifest) {
+      try {
+        const serverEntry = await lookupFromServer(keys.publicKey);
+        if (serverEntry) {
+          seq = serverEntry.seq + 1;
+          console.log('Found existing entry on server (seq:', serverEntry.seq, ')');
         }
+      } catch (err) {
+        console.log('Could not reach server, continuing with local data');
+      }
+    }
+
+    // If still no manifest, create new one
+    if (!manifest) {
+      manifest = tryLoadLocalManifest(keys.publicKey);
+      if (manifest) {
+        console.log('Found local manifest file with', manifest.messages.length, 'existing messages');
       } else {
-        manifest = tryLoadLocalManifest(keys.publicKey);
-        if (manifest) {
-          console.log('Found local manifest file with', manifest.messages.length, 'existing messages');
-        } else {
-          console.log('No existing manifest found, creating new one');
-          manifest = { publicKey: keys.publicKey, messages: [] };
-        }
+        console.log('No existing manifest found, creating new one');
+        manifest = { publicKey: keys.publicKey, messages: [] };
       }
     }
 
@@ -168,13 +229,17 @@ async function main() {
 
     console.log('');
 
-    // Update DHT with new manifest infohash
-    console.log('Publishing to DHT (seq:', seq, ')...');
-    await putMutable(dht, publicKey, privateKey, manifestTorrent.infohash, seq);
-    console.log('Published to DHT successfully!');
+    // Announce to signaling server
+    console.log('Announcing to server (seq:', seq, ')...');
+    try {
+      await announceToServer(keys.publicKey, privateKey, manifestTorrent.infohash, seq);
+      console.log('Announced to server successfully!');
+    } catch (err) {
+      console.log('Warning: Could not announce to server:', err.message);
+      console.log('Messages will still be available via torrent if you share the infohash directly.');
+    }
 
-    // Also save to local index for reliable local retrieval
-    const localIndex = loadLocalIndex();
+    // Save to local index
     localIndex[keys.publicKey] = {
       manifestInfohash: manifestTorrent.infohash,
       seq: seq,
@@ -197,34 +262,20 @@ async function main() {
     console.log('Share your public key with others so they can find your messages:');
     console.log('  node find-messages.js', keys.publicKey);
     console.log('');
-    console.log('Keep this process running to seed the torrent and maintain DHT presence...');
+    console.log('Keep this process running to seed the torrent...');
     console.log('Press Ctrl+C to stop');
-
-    // Periodically re-announce to DHT to maintain presence
-    const reannounceInterval = setInterval(async () => {
-      try {
-        console.log(`[${new Date().toISOString()}] Re-announcing to DHT...`);
-        await putMutable(dht, publicKey, privateKey, manifestTorrent.infohash, seq);
-        console.log(`[${new Date().toISOString()}] DHT re-announcement successful`);
-      } catch (err) {
-        console.log(`[${new Date().toISOString()}] DHT re-announcement failed: ${err.message}`);
-      }
-    }, 60000); // Re-announce every 60 seconds
 
     // Keep running to seed
     process.on('SIGINT', async () => {
       console.log('');
       console.log('Shutting down...');
-      clearInterval(reannounceInterval);
       if (client) await destroyClient(client);
-      if (dht) await destroyDHT(dht);
       process.exit(0);
     });
 
   } catch (err) {
     console.error('Error:', err.message);
     if (client) await destroyClient(client);
-    if (dht) await destroyDHT(dht);
     process.exit(1);
   }
 }

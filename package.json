@@ -15,7 +15,8 @@
   "scripts": {
     "generate-keys": "node generate-keys.js",
     "share": "node share-message.js",
-    "find": "node find-messages.js"
+    "find": "node find-messages.js",
+    "server": "node server.js"
   },
   "dependencies": {
     "bittorrent-dht": "^11.0.7",
